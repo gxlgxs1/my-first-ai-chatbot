@@ -124,9 +124,8 @@ with st.sidebar:
     if st.button("🚀 处理并构建知识库"):
         if uploaded_files:
             total_chunks = 0
-            # 清空旧集合（简单处理：重建）
+            # 直接操作全局 collection，无需 global 声明
             client.delete_collection(collection_name)
-            global collection
             collection = client.create_collection(name=collection_name, embedding_function=ef)
             
             for file in uploaded_files:
