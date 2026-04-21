@@ -145,7 +145,6 @@ with st.sidebar:
             total = 0
             # 清空旧数据
             client.delete_collection(collection_name)
-            global collection
             collection = client.create_collection(name=collection_name, embedding_function=ef)
             for file in uploaded_files:
                 with st.spinner(f"处理 {file.name} ..."):
