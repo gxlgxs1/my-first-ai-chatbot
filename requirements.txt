@@ -8,4 +8,5 @@ markdown
 beautifulsoup4
 python-dotenv
 protobuf==3.20.3
-numpy==1.24.3
+numpy>=1.26.0
+setuptools
