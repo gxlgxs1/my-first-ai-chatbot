@@ -1,0 +1,5 @@
+.env
+web_rag_db/
+__pycache__/
+*.pyc
+.DS_Store

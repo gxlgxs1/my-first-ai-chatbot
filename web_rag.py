@@ -1,13 +1,20 @@
 import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+from dotenv import load_dotenv
 
-import streamlit as st
-import requests
-import chromadb
-from chromadb.utils import embedding_functions
-from pypdf import PdfReader
-import tempfile
-import hashlib
+# 加载 .env 文件（仅本地开发时使用）
+load_dotenv()
+
+# 优先从环境变量读取，如果没有则尝试从 st.secrets 读取（云端）
+try:
+    import streamlit as st
+    API_KEY = st.secrets.get("DOUBAO_API_KEY", os.getenv("DOUBAO_API_KEY"))
+    MODEL_ID = st.secrets.get("MODEL_ID", os.getenv("MODEL_ID"))
+except:
+    API_KEY = os.getenv("DOUBAO_API_KEY")
+    MODEL_ID = os.getenv("MODEL_ID")
+
+if not API_KEY or not MODEL_ID:
+    raise ValueError("请在 .env 文件或 Streamlit secrets 中设置 DOUBAO_API_KEY 和 MODEL_ID")
 
 # ---------- 配置 ----------
 # 从 Streamlit secrets 读取（部署时）
@@ -16,15 +23,15 @@ try:
     MODEL_ID = st.secrets["MODEL_ID"]
 except:
     # 本地测试时，可以硬编码（但不要提交到 GitHub）
-    API_KEY = "你的API Key"
-    MODEL_ID = "你的模型ID"
+    API_KEY = "36beb600-4058-4e8e-b6de-8f2cf2330c2f"
+    MODEL_ID = "doubao-seed-2-0-code-preview-260215"
 
 URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 HEADERS = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
 
 # 初始化 ChromaDB（持久化）
 client = chromadb.PersistentClient(path="./web_rag_db")
-ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="BAAI/bge-small-zh")
 collection_name = "multi_docs"
 try:
     collection = client.get_collection(name=collection_name, embedding_function=ef)
@@ -32,11 +39,16 @@ except:
     collection = client.create_collection(name=collection_name, embedding_function=ef)
 
 # ---------- 辅助函数 ----------
+from docx import Document
+import markdown
+from bs4 import BeautifulSoup  # 用于清理 HTML（可选）
+
 def load_text_from_file(uploaded_file):
-    """从上传的文件中提取文本（支持 txt 和 pdf）"""
-    if uploaded_file.name.endswith('.txt'):
+    """从上传的文件中提取文本（支持 txt、pdf、docx、md）"""
+    file_name = uploaded_file.name
+    if file_name.endswith('.txt'):
         return uploaded_file.read().decode('utf-8')
-    elif uploaded_file.name.endswith('.pdf'):
+    elif file_name.endswith('.pdf'):
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
             tmp.write(uploaded_file.read())
             tmp_path = tmp.name
@@ -46,10 +58,25 @@ def load_text_from_file(uploaded_file):
             text += page.extract_text()
         os.unlink(tmp_path)
         return text
+    elif file_name.endswith('.docx'):
+        # 读取 Word 文档
+        doc = Document(uploaded_file)
+        text = "\n".join([para.text for para in doc.paragraphs])
+        return text
+    elif file_name.endswith('.md'):
+        # 读取 Markdown 文件，转为纯文本（可选：保留标题标记）
+        md_content = uploaded_file.read().decode('utf-8')
+        # 方法1：直接返回原 Markdown 文本（AI 也能理解）
+        # return md_content
+        # 方法2：将 Markdown 转为纯文本（去除格式标记）
+        html = markdown.markdown(md_content)
+        soup = BeautifulSoup(html, 'html.parser')
+        text = soup.get_text()
+        return text
     else:
         return None
 
-def chunk_text(text, chunk_size=500, overlap=50):
+def chunk_text(text, chunk_size=300, overlap=50):
     """切分文本"""
     chunks = []
     start = 0
@@ -79,7 +106,7 @@ def add_to_vector_store(chunks, doc_name):
     collection.add(documents=documents, ids=ids, metadatas=metadatas)
     return len(chunks)
 
-def retrieve(query, top_k=3):
+def retrieve(query, top_k=5):
     """检索相关片段，同时返回元数据"""
     results = collection.query(query_texts=[query], n_results=top_k)
     documents = results['documents'][0]
@@ -120,7 +147,11 @@ st.markdown("上传多个文档（TXT/PDF），然后提问，AI 将基于文档
 # 侧边栏：文档上传与管理
 with st.sidebar:
     st.header("📁 文档管理")
-    uploaded_files = st.file_uploader("上传文档（支持多个）", type=["txt", "pdf"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader(
+    "上传文档（支持多个）", 
+    type=["txt", "pdf", "docx", "md"], 
+    accept_multiple_files=True
+)
     if st.button("🚀 处理并构建知识库"):
         if uploaded_files:
             total_chunks = 0
@@ -147,7 +178,10 @@ with st.sidebar:
         collection = client.create_collection(name=collection_name, embedding_function=ef)
         st.success("已清空知识库")
         st.rerun()
-
+    if st.button("🗑️ 清除对话历史"):
+        st.session_state.messages = []
+        st.success("对话历史已清除")
+        st.rerun()
 # 主区域：对话
 st.header("💬 对话")
 # 初始化会话状态
@@ -173,12 +207,18 @@ if prompt := st.chat_input("请输入问题"):
         if not results:
             answer = "知识库为空，请先上传文档。"
             sources = ""
+            retrieved_chunks = []
         else:
             answer, sources = ask_llm(prompt, results)
+            retrieved_chunks = [chunk for chunk, _ in results]   # 提取片段文本
     
     # 显示助手回复
     with st.chat_message("assistant"):
         st.markdown(answer)
         if sources:
             st.caption(f"📌 来源: {sources}")
+        if retrieved_chunks:
+            with st.expander("📖 参考的文档片段"):
+                for i, chunk in enumerate(retrieved_chunks):
+                    st.text(f"[片段{i+1}] {chunk[:200]}...")
     st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
