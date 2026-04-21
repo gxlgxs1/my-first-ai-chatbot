@@ -1,5 +1,5 @@
 streamlit
-chromadb==0.4.22
+chromadb==0.4.24
 sentence-transformers
 pypdf
 requests
